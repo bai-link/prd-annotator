@@ -203,7 +203,7 @@ def cmd_merge(args):
         if anchor in idx:
             n = idx[anchor]
             changed = False
-            for k in ['title', 'req', 'status', 'page', 'css', 'evidence', 'decision'] + FIELDS:
+            for k in ['title', 'req', 'status', 'page', 'css', 'evidence', 'decision', 'replaces'] + FIELDS:
                 if k not in it:
                     continue
                 v = it[k]
@@ -222,7 +222,7 @@ def cmd_merge(args):
             n = new_note({'anchor': anchor, 'kind': it.get('kind', anchor.split(':')[0]),
                           'page': it.get('page', ''), 'title': it.get('title', ''), 'hash': ''})
             n['source'] = {'line': it.get('line', 0), 'ref': 'merge 导入'}
-            for k in ['req', 'func', 'status', 'css', 'evidence', 'decision']:
+            for k in ['req', 'func', 'status', 'css', 'evidence', 'decision', 'replaces']:
                 if k in it:
                     n[k] = it[k]
             for k in FIELDS:
@@ -435,7 +435,7 @@ def render_note(n):
 # ---------------- inject ----------------
 
 PANEL_CSS = """
-.prd-badge{position:absolute;z-index:9998;width:18px;height:18px;border:none;padding:0;border-radius:50%;
+.prd-badge{position:fixed;z-index:40;width:16px;height:16px;border:none;padding:0;border-radius:50%;
  background:#2f6bff;color:#fff;font:700 11px/18px -apple-system,'Microsoft YaHei',sans-serif;text-align:center;
  cursor:pointer;box-shadow:0 1px 5px rgba(47,107,255,.45);opacity:.55;transition:opacity .15s,transform .15s}
 .prd-badge:hover{opacity:1;transform:scale(1.15)}
@@ -462,7 +462,7 @@ PANEL_CSS = """
  font:12px/1.6 -apple-system,'Microsoft YaHei',sans-serif;margin:2px 0 6px;resize:vertical}
 .prd-pop .tip{color:#98a2b3;font-size:11px;margin:0 0 4px}
 .prd-hit{outline:2px solid #2f6bff !important;outline-offset:2px;border-radius:4px;transition:outline .15s}
-.prd-fabs{position:fixed;right:18px;bottom:18px;z-index:9999;display:flex;gap:8px}
+.prd-fabs{position:fixed;left:50%;top:8px;transform:translateX(-50%);z-index:70;display:flex;gap:6px}
 .prd-fab{height:32px;padding:0 12px;border:1px solid #dbe3ef;border-radius:16px;background:#fff;color:#4b5563;
  font:600 12px/30px -apple-system,'Microsoft YaHei',sans-serif;cursor:pointer;box-shadow:0 3px 12px rgba(15,23,42,.12)}
 .prd-fab.off{opacity:.55}
@@ -505,11 +505,12 @@ PANEL_JS = r"""
   }
   function byAnchor(a){for(var i=0;i<NOTES.length;i++){if(NOTES[i].anchor===a)return NOTES[i];}return null;}
   function hostOf(n){
-    var explicit=document.querySelector('[data-prd-anchor="'+CSS.escape(n.anchor)+'"]');if(explicit)return explicit;
+    var explicit=uniqueHost('[data-prd-anchor="'+CSS.escape(n.anchor)+'"]',n);if(explicit)return explicit;
+    if(n.css)return uniqueHost(n.css,n);
 
     if(n.kind==='page'){var s=document.getElementById('p-'+n.page); return s?(s.querySelector('.ph')||s):null;}
     if(n.kind==='action'){
-      var key=n.key||'', scopes=[document.getElementById('p-'+n.page),document.getElementById('logicDialog'),document.getElementById('logicDrawer'),document];
+      var key=n.key||'';var keyed=key&&uniqueHost('[data-flow-action="'+CSS.escape(key)+'"],[data-action="'+CSS.escape(key)+'"]',n);if(keyed)return keyed;var scopes=[document.getElementById('p-'+n.page),document.getElementById('logicDialog'),document.getElementById('logicDrawer'),document];
       var labs=n.labels||[];
       for(var s=0;s<scopes.length;s++){
         if(!scopes[s]) continue;
@@ -519,14 +520,9 @@ PANEL_JS = r"""
           if(key && oc.indexOf("act('"+key+"'")>=0) return btns[i];
         }
       }
-      for(var s2=0;s2<scopes.length;s2++){
-        if(!scopes[s2]) continue;
-        var bs=scopes[s2].querySelectorAll('button');
-        for(var j=0;j<bs.length;j++){
-          var tx=norm(bs[j].textContent);
-          for(var k=0;k<labs.length;k++){ var lb=norm(labs[k]); if(lb && tx===lb) return bs[j]; }
-        }
-      }
+      var hits=Array.from(document.querySelectorAll('button')).filter(function(b){return !b.classList.contains('prd-badge')&&visible(b)&&labs.some(function(lb){return norm(lb)===norm(b.textContent)})});
+      var overlay=activeOverlay();if(overlay)hits=hits.filter(function(b){return overlay.contains(b)});
+      if(hits.length===1)return hits[0];
       return null;
     }
     if(n.kind==='state'){
@@ -556,22 +552,69 @@ PANEL_JS = r"""
     if(pop && pop.parentNode) pop.parentNode.removeChild(pop);
     pop=null; curAnchor=null;
   }
+  function visible(node){
+    if(!node || !node.isConnected || node.closest('[hidden],[inert]'))return false;
+    var c=getComputedStyle(node),r=node.getBoundingClientRect();
+    return c.display!=='none' && c.visibility!=='hidden' && r.width>0 && r.height>0 && r.right>0 && r.bottom>0 && r.left<innerWidth && r.top<innerHeight;
+  }
+  function activeOverlay(){
+    var nodes=Array.from(document.querySelectorAll('[role="dialog"][aria-modal="true"],dialog[open],.modal.on,.drawer.on,#flowInboxDrawer.open'));
+    nodes=nodes.filter(function(n){return !n.classList.contains('flow-inline')&&visible(n)});
+    return nodes.sort(function(a,b){return (parseInt(getComputedStyle(a).zIndex)||0)-(parseInt(getComputedStyle(b).zIndex)||0)}).pop()||null;
+  }
+  function uniqueHost(selector,n){
+    var nodes;try{nodes=Array.from(document.querySelectorAll(selector)).filter(visible)}catch(e){return null}
+    var overlay=activeOverlay();if(overlay)nodes=nodes.filter(function(el){return overlay.contains(el)});
+    if(nodes.length!==1){if(nodes.length>1)console.warn('PRD anchor ambiguous:',n.anchor,selector);return null}
+    return nodes[0];
+  }
+  function replaceExplanations(n){
+    (n.replaces||[]).forEach(function(spec){
+      if(!spec || !spec.css || typeof spec.text!=='string')return;
+      var nodes;try{nodes=document.querySelectorAll(spec.css)}catch(e){return}
+      if(nodes.length!==1)return;
+      var node=nodes[0];
+      if(node.matches('[data-prd-live],[role="alert"],input,select,textarea')||node.querySelector('input,select,textarea,button,[role="alert"],[data-prd-live]'))return;
+      if(norm(node.textContent)!==norm(spec.text))return;
+      if(!node.hidden){node.hidden=true;node.dataset.prdReplacedBy=n.anchor}
+    });
+  }
+  function layoutBadges(){
+    var overlay=activeOverlay(),fabs=document.querySelector('.prd-fabs');
+    if(fabs)fabs.style.display=overlay?'none':'';
+    document.querySelectorAll('.prd-badge').forEach(function(d){
+      var h=d.__host,allowed=visible(h)&&(!overlay||overlay.contains(h));
+      if(allowed){
+        var r=h.getBoundingClientRect(),x=r.width>=64?r.right-20:r.right+2,y=r.top+3;
+        x=Math.max(2,Math.min(innerWidth-20,x));y=Math.max(2,Math.min(innerHeight-20,y));
+        // If a scroll container clips the component, do not leave a floating orphan.
+        for(var a=h.parentElement;a&&a!==document.body;a=a.parentElement){
+          var c=getComputedStyle(a),b=a.getBoundingClientRect();
+          if(/auto|scroll|hidden|clip/.test(c.overflowX+c.overflowY)&&(y<b.top||y+16>b.bottom||r.right<=b.left||r.left>=b.right)){allowed=false;break}
+        }
+        d.style.left=x+'px';d.style.top=y+'px';
+      }
+      d.style.display=allowed?'block':'none';
+      d.style.zIndex=overlay?String((parseInt(getComputedStyle(overlay).zIndex)||100)+1):'40';
+    });
+    if(pop&&hitEl&&(!visible(hitEl)||(overlay&&!overlay.contains(hitEl))))closePop();
+  }
   function mount(){
-    if(!showBadges){ clearBadges(); return; }
     clearBadges();
+    if(!showBadges){layoutBadges();return}
+    var used=new Set(),audit=[];
     for(var i=0;i<NOTES.length;i++){
-      var n=NOTES[i], h=hostOf(n);
-      if(!h) continue;
-      if(h.querySelector(':scope > .prd-badge')) continue;
-      var cs=getComputedStyle(h);
-      if(cs.position==='static') h.style.position='relative';
+      var n=NOTES[i];replaceExplanations(n);var h=hostOf(n);
+      if(!h||!visible(h)){audit.push({anchor:n.anchor,result:'unmatched-or-hidden',selector:n.css||''});continue}
+      if(used.has(h)){audit.push({anchor:n.anchor,result:'duplicate-host',selector:n.css||''});continue}used.add(h);
       var d=el('button','prd-badge');
-      d.type='button'; d.textContent='?'; d.title=(n.title||'')+' · 点击查看业务规则';
-      d.dataset.a=n.anchor; d.style.top='-9px'; d.style.right='-9px';
-      d.__n=n;
-      d.onclick=function(ev){ ev.stopPropagation(); ev.preventDefault(); openPop(this.__n, this.parentNode); };
-      h.appendChild(d);
+      d.type='button';d.textContent='?';d.title=(n.title||'')+' · 点击查看业务规则';d.setAttribute('aria-label',d.title);
+      d.dataset.a=n.anchor;d.__n=n;d.__host=h;
+      d.onclick=function(ev){ev.stopPropagation();ev.preventDefault();openPop(this.__n,this.__host)};
+      document.body.appendChild(d);
+      audit.push({anchor:n.anchor,result:'matched',selector:n.css||'',tag:h.tagName,id:h.id||''});
     }
+    window.__PRD_ANNOTATION_AUDIT__=audit;layoutBadges();
   }
   function place(host){
     if(!pop) return;
@@ -768,7 +811,7 @@ PANEL_JS = r"""
     if(t.closest('.prd-badge') || t.closest('.prd-fabs') || t.closest('.prd-toast')) return;
     closePop();
   },true);
-  function reposition(){ if(pop && hitEl && document.contains(hitEl)) place(hitEl); }
+  function reposition(){layoutBadges();if(pop&&hitEl&&document.contains(hitEl))place(hitEl)}
   window.addEventListener('scroll',reposition,true);
   window.addEventListener('resize',reposition);
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', start); else start();
@@ -782,12 +825,13 @@ PANEL_JS = r"""
     for(var i=0;i<recs.length;i++){
       var rec=recs[i];
       if(pop && (rec.target===pop || pop.contains(rec.target))) continue;
+      if(rec.type==='attributes'){if(!isOwn(rec.target))schedule();continue;}
       var add=rec.addedNodes, rem=rec.removedNodes, foreign=false, a, r;
       for(a=0;a<add.length;a++){ if(!isOwn(add[a])){ foreign=true; break; } }
       if(!foreign) for(r=0;r<rem.length;r++){ if(!isOwn(rem[r])){ foreign=true; break; } }
       if(foreign){ schedule(); return; }
     }
-  }).observe(document.body,{childList:true,subtree:true});
+  }).observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['class','hidden','open','aria-hidden','aria-modal','inert']});
 })();
 """
 
@@ -801,14 +845,14 @@ def cmd_inject(args):
     if re.search(r'(?:src|href)=[\"\'][^:/#\"\']', t) and args.out and os.path.dirname(os.path.abspath(args.out)) != os.path.dirname(os.path.abspath(args.html)):
         print('提示：输出目录改变，请检查原型相对资源路径。')
     t = re.sub(r'<(?:style|script)\b[^>]*id=[\"\']prd-annotator-(?:css|data|js)[\"\'][^>]*>.*?</(?:style|script)>', '', t, flags=re.S|re.I)
-    raw = [n for n in data['notes'] if n.get('status') != 'deprecated']
+    raw = [n for n in data['notes'] if n.get('status') not in ('deprecated', 'n/a')]
     payload = []
     for n in raw:
         payload.append({
             'anchor': n['anchor'], 'kind': n['kind'], 'page': n.get('page', ''),
             'key': n['anchor'].split(':', 1)[1] if ':' in n['anchor'] else n['anchor'],
             'title': n.get('title', ''), 'req': n.get('req', ''), 'status': n.get('status', 'draft'),
-            'css': n.get('css', ''), 'func': n.get('func', ''), 'rules': n.get('rules', []),
+            'css': n.get('css', ''), 'replaces': n.get('replaces', []), 'func': n.get('func', ''), 'rules': n.get('rules', []),
             'edges': n.get('edges', []), 'interaction': n.get('interaction', []),
             'labels': n.get('labels') or [x for x in (n.get('title') or '').split(' / ') if x],
         })
